@@ -35,13 +35,14 @@ export default async function handler(req, res) {
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const json = await r.json();
-    // Response: { data: [{ sellPrice, buybackPrice, weight, materialType, ... }] }
+    // Cari spesifik 1 gram dengan harga > 2jt, bukan 0.5gram atau lainnya
     const item = Array.isArray(json?.data)
-      ? json.data.find(d => d.weight === 1 || d.materialType === "GALERI 24") || json.data[0]
+      ? json.data.find(d => Number(d.sellPrice || d.buy || 0) > 2000000 && (d.weight === 1 || d.weightUnit === "gr"))
+        || json.data.find(d => Number(d.sellPrice || d.buy || 0) > 2000000)
       : null;
-    if (!item) throw new Error("Data kosong");
+    if (!item) throw new Error("Item 1gram tidak ditemukan");
     const buy = Number(item.sellPrice || item.buy || 0);
-    if (!(buy > 1000000)) throw new Error(`Harga tidak valid: ${buy}`);
+    if (!(buy > 2000000)) throw new Error(`Harga tidak valid: ${buy}`);
     const b001 = Math.round(buy / 100);
     const j001 = Math.round(Number(item.buybackPrice || item.sel || buy * 0.93) / 100);
     return res.status(200).json(buildResponse(true, "Galeri24 (iamutaki workers)", sourceUrl, b001, j001, item.recordedDate || null, errors));
@@ -55,11 +56,12 @@ export default async function handler(req, res) {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const json = await r.json();
     const item = Array.isArray(json?.data)
-      ? json.data.find(d => d.weight === 1) || json.data[0]
+      ? json.data.find(d => Number(d.sellPrice || d.buy || 0) > 2000000 && (d.weight === 1 || d.weightUnit === "gr"))
+        || json.data.find(d => Number(d.sellPrice || d.buy || 0) > 2000000)
       : null;
-    if (!item) throw new Error("Data kosong");
+    if (!item) throw new Error("Item 1gram tidak ditemukan");
     const buy = Number(item.sellPrice || item.buy || 0);
-    if (!(buy > 1000000)) throw new Error(`Harga tidak valid: ${buy}`);
+    if (!(buy > 2000000)) throw new Error(`Harga tidak valid: ${buy}`);
     const b001 = Math.round(buy / 100);
     const j001 = Math.round(Number(item.buybackPrice || item.sel || buy * 0.89) / 100);
     return res.status(200).json(buildResponse(true, "Antam (iamutaki workers)", sourceUrl, b001, j001, item.recordedDate || null, errors));
@@ -98,10 +100,12 @@ export default async function handler(req, res) {
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const json = await r.json();
-    const item = Array.isArray(json?.data) ? json.data[0] : null;
-    if (!item) throw new Error("Data kosong");
+    const item = Array.isArray(json?.data)
+      ? json.data.find(d => Number(d.sellPrice || d.buy || 0) > 2000000)
+      : null;
+    if (!item) throw new Error("Item 1gram tidak ditemukan");
     const buy = Number(item.sellPrice || item.buy || 0);
-    if (!(buy > 1000000)) throw new Error(`Harga tidak valid: ${buy}`);
+    if (!(buy > 2000000)) throw new Error(`Harga tidak valid: ${buy}`);
     const b001 = Math.round(buy / 100);
     const j001 = Math.round(Number(item.buybackPrice || item.sel || buy * 0.93) / 100);
     return res.status(200).json(buildResponse(true, "Pegadaian (iamutaki workers)", sourceUrl, b001, j001, item.recordedDate || null, errors));
