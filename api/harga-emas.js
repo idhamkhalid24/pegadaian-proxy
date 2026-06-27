@@ -135,21 +135,18 @@ export default async function handler(req, res) {
     ));
   } catch (e) { errors.push(`L7-XAU/IDR: ${e.message}`); }
 
-  // ─── LAPIS 8 (LAST RESORT): Hardcode manual ──────────────────────────────────
-  // Galeri24 Pegadaian 27 Juni 2026: Rp 2.627.000/gram
-  return res.status(200).json({
+  // ─── LAPIS 8: Semua gagal — jangan tampilkan harga ─────────────────────────
+  return res.status(503).json({
     success: false,
-    sumber: "Galeri24 Pegadaian — fallback manual (27 Jun 2026)",
-    source_url: sourceUrl,
-    beli_001: 26270,
-    jual_001: 24500,
-    beli_per_gram: 2627000,
-    jual_per_gram: 2450000,
-    berat: 0.01,
-    satuan: "gram",
+    harga_tersedia: false,
+    sumber: null,
+    beli_001: null,
+    jual_001: null,
+    beli_per_gram: null,
+    jual_per_gram: null,
     timestamp: new Date().toISOString(),
     errors,
-    note: "Semua sumber live gagal. Pakai data hardcode terakhir."
+    message: "Semua sumber harga tidak dapat diakses. Harga tidak ditampilkan."
   });
 }
 
