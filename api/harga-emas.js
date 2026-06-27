@@ -100,7 +100,7 @@ export default async function handler(req, res) {
 
 async function fetchFromAlternativeSource() {
   const response = await fetch(
-    "https://logam-mulia-api.iamutaki.workers.dev/api/prices/pegadaian",
+    "https://logam-mulia-api.vercel.app/prices/pegadaian",
     {
       headers: {
         "User-Agent": "Mozilla/5.0",
@@ -112,23 +112,26 @@ async function fetchFromAlternativeSource() {
   if (!response.ok) return null;
 
   const json = await response.json();
-  const item = json?.data?.[0];
+  const item = Array.isArray(json?.data) ? json.data[0] : null;
   if (!item) return null;
 
-  const berat = Number(item.weight || 0.01);
-  const beli001 = Number(item.sellPrice || 0);
-  const jual001 = Number(item.buybackPrice || 0);
-  if (!(beli001 > 0)) return null;
+  const buy = Number(item.buy || item.sellPrice || 0);
+  const sel = Number(item.sel || item.buybackPrice || 0);
+  if (!(buy > 0)) return null;
+
+  // Sumber ini kadang melaporkan harga per 0,01 gram (puluhan ribu, gaya Pegadaian Tring),
+  // kadang per gram (jutaan). Deteksi otomatis berdasarkan skala angkanya.
+  const isPerHundredthGram = buy >= 10000 && buy <= 60000;
 
   return {
     sumber: "Pegadaian (sumber alternatif live)",
-    beli_001: beli001,
-    jual_001: jual001,
-    beli_per_gram: berat > 0 ? Math.round(beli001 / berat) : beli001 * 100,
-    jual_per_gram: berat > 0 ? Math.round(jual001 / berat) : jual001 * 100,
-    berat: berat,
-    satuan: item.weightUnit || "gram",
-    tanggal: item.recordedDate || json.timestamp || null
+    beli_001: isPerHundredthGram ? Math.round(buy) : Math.round(buy / 100),
+    jual_001: isPerHundredthGram ? Math.round(sel) : Math.round(sel / 100),
+    beli_per_gram: isPerHundredthGram ? Math.round(buy * 100) : Math.round(buy),
+    jual_per_gram: isPerHundredthGram ? Math.round(sel * 100) : Math.round(sel),
+    berat: 0.01,
+    satuan: "gram",
+    tanggal: item.recordedDate || item.date || json.timestamp || null
   };
 }
 
