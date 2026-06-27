@@ -52,7 +52,31 @@ export default async function handler(req, res) {
       timestamp: new Date().toISOString()
     });
   } catch (err) {
-    // Cadangan manual supaya aplikasi tidak blank kalau struktur website berubah.
+    // LAPIS 2: kalau scraping pegadaian.co.id gagal (blocked/berubah struktur),
+    // coba sumber live alternatif dulu sebelum jatuh ke angka manual statis.
+    try {
+      const altResult = await fetchFromAlternativeSource();
+      if (altResult) {
+        return res.status(200).json({
+          success: true,
+          sumber: altResult.sumber,
+          source_url: sourceUrl,
+          beli_001: altResult.beli_001,
+          jual_001: altResult.jual_001,
+          beli_per_gram: altResult.beli_per_gram,
+          jual_per_gram: altResult.jual_per_gram,
+          berat: altResult.berat,
+          satuan: altResult.satuan,
+          tanggal: altResult.tanggal,
+          timestamp: new Date().toISOString(),
+          note: `Scrape utama gagal (${err.message}), pakai sumber alternatif live.`
+        });
+      }
+    } catch (altErr) {
+      // lanjut ke fallback manual di bawah
+    }
+
+    // LAPIS 3: Cadangan manual supaya aplikasi tidak blank kalau semua sumber live gagal.
     // Angka ini disamakan dengan kotak utama Pegadaian di screenshot:
     // Beli Emas Rp 25.720 / 0,01 gr dan Jual Emas Rp 24.690 / 0,01 gr.
     return res.status(200).json({
@@ -72,6 +96,40 @@ export default async function handler(req, res) {
       timestamp: new Date().toISOString()
     });
   }
+}
+
+async function fetchFromAlternativeSource() {
+  const response = await fetch(
+    "https://logam-mulia-api.iamutaki.workers.dev/api/prices/pegadaian",
+    {
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json"
+      }
+    }
+  );
+
+  if (!response.ok) return null;
+
+  const json = await response.json();
+  const item = json?.data?.[0];
+  if (!item) return null;
+
+  const berat = Number(item.weight || 0.01);
+  const beli001 = Number(item.sellPrice || 0);
+  const jual001 = Number(item.buybackPrice || 0);
+  if (!(beli001 > 0)) return null;
+
+  return {
+    sumber: "Pegadaian (sumber alternatif live)",
+    beli_001: beli001,
+    jual_001: jual001,
+    beli_per_gram: berat > 0 ? Math.round(beli001 / berat) : beli001 * 100,
+    jual_per_gram: berat > 0 ? Math.round(jual001 / berat) : jual001 * 100,
+    berat: berat,
+    satuan: item.weightUnit || "gram",
+    tanggal: item.recordedDate || json.timestamp || null
+  };
 }
 
 function parsePegadaianHargaUtama(html) {
