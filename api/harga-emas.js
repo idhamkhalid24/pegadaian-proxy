@@ -6,284 +6,229 @@ export default async function handler(req, res) {
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
 
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
+  if (req.method === "OPTIONS") return res.status(204).end();
 
   const sourceUrl = "https://pegadaian.co.id/harga-emas";
+  const errors = [];
 
-  // LAPIS 1: Scrape langsung dari pegadaian.co.id
+  // ─── LAPIS 1: Scrape langsung pegadaian.co.id ───────────────────────────────
   try {
-    const response = await fetch(`${sourceUrl}?_=${Date.now()}`, {
+    const r = await fetch(`${sourceUrl}?_=${Date.now()}`, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/125 Mobile Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache"
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "id-ID,id;q=0.9",
+        "Cache-Control": "no-cache"
       }
     });
+    if (!r.ok) throw new Error(`Pegadaian HTTP ${r.status}`);
+    const html = await r.text();
+    const parsed = parsePegadaianHTML(html);
+    if (!parsed?.beli_001) throw new Error("Harga tidak ditemukan di HTML Pegadaian");
+    return res.status(200).json(buildResponse(true, "Pegadaian Galeri24 (live)", sourceUrl, parsed.beli_001, parsed.jual_001, parsed.tanggal));
+  } catch (e) { errors.push(`L1-Pegadaian: ${e.message}`); }
 
-    if (!response.ok) {
-      throw new Error(`Gagal ambil halaman Pegadaian (${response.status})`);
-    }
-
-    const html = await response.text();
-    const parsed = parsePegadaianHargaUtama(html);
-
-    if (!parsed?.beli_001) {
-      throw new Error("Harga utama Beli Emas tidak ditemukan di halaman Pegadaian");
-    }
-
-    return res.status(200).json({
-      success: true,
-      sumber: "Pegadaian (live)",
-      source_url: sourceUrl,
-      beli_001: parsed.beli_001,
-      jual_001: parsed.jual_001 || 0,
-      beli_per_gram: parsed.beli_001 * 100,
-      jual_per_gram: parsed.jual_001 ? parsed.jual_001 * 100 : 0,
-      berat: 0.01,
-      satuan: "gram",
-      tanggal: parsed.tanggal || null,
-      timestamp: new Date().toISOString()
+  // ─── LAPIS 2: harga-emas.org — scrape Galeri24 ──────────────────────────────
+  try {
+    const r = await fetch(`https://harga-emas.org/?_=${Date.now()}`, {
+      headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*" }
     });
-  } catch (err) {
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const html = await r.text();
+    const harga = scrapeHargaPerGram(html, ["Galeri24", "Galeri 24"]);
+    if (!harga) throw new Error("Galeri24 tidak ditemukan");
+    const b001 = Math.round(harga / 100);
+    return res.status(200).json(buildResponse(true, "Galeri24 (harga-emas.org)", sourceUrl, b001, Math.round(b001 * 0.96), null, errors));
+  } catch (e) { errors.push(`L2-hargaemas.org: ${e.message}`); }
 
-    // LAPIS 2A: harga-emas.org — scrape tabel harga Galeri24
-    try {
-      const alt1 = await fetchFromHargaEmasOrg();
-      if (alt1) {
-        return res.status(200).json({
-          success: true,
-          sumber: "Galeri24 Pegadaian (harga-emas.org)",
-          source_url: sourceUrl,
-          beli_001: alt1.beli_001,
-          jual_001: alt1.jual_001,
-          beli_per_gram: alt1.beli_per_gram,
-          jual_per_gram: alt1.jual_per_gram,
-          berat: 0.01,
-          satuan: "gram",
-          tanggal: alt1.tanggal || null,
-          timestamp: new Date().toISOString(),
-          note: `Scrape utama gagal (${err.message}), pakai harga-emas.org.`
-        });
-      }
-    } catch (_) {}
-
-    // LAPIS 2B: logam-mulia-api — endpoint pegadaian
-    try {
-      const alt2 = await fetchFromLogamMuliaApi();
-      if (alt2) {
-        return res.status(200).json({
-          success: true,
-          sumber: "Pegadaian (logam-mulia-api)",
-          source_url: sourceUrl,
-          beli_001: alt2.beli_001,
-          jual_001: alt2.jual_001,
-          beli_per_gram: alt2.beli_per_gram,
-          jual_per_gram: alt2.jual_per_gram,
-          berat: 0.01,
-          satuan: "gram",
-          tanggal: alt2.tanggal || null,
-          timestamp: new Date().toISOString(),
-          note: `Scrape utama gagal (${err.message}), pakai logam-mulia-api.`
-        });
-      }
-    } catch (_) {}
-
-    // LAPIS 3: Fallback manual — diupdate ke harga Galeri24 terkini (28 Juni 2026)
-    // Galeri24 1gr = Rp 2.638.000 → per 0,01gr = 26.380
-    // Jual balik (estimasi ~4% di bawah beli): ~25.300
-    return res.status(200).json({
-      success: false,
-      message: err.message,
-      sumber: "Galeri24 Pegadaian - fallback manual",
-      source_url: sourceUrl,
-      fallback: {
-        beli_001: 26380,
-        jual_001: 25300,
-        beli_per_gram: 2638000,
-        jual_per_gram: 2530000,
-        berat: 0.01,
-        satuan: "gram",
-        sumber: "Galeri24 Pegadaian - fallback manual"
-      },
-      beli_001: 26380,
-      jual_001: 25300,
-      beli_per_gram: 2638000,
-      jual_per_gram: 2530000,
-      berat: 0.01,
-      satuan: "gram",
-      timestamp: new Date().toISOString()
+  // ─── LAPIS 3: logam-mulia-api — endpoint pegadaian ──────────────────────────
+  try {
+    const r = await fetch("https://logam-mulia-api.vercel.app/prices/pegadaian", {
+      headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" }
     });
-  }
-}
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const json = await r.json();
+    const item = Array.isArray(json?.data) ? json.data[0] : null;
+    if (!item) throw new Error("Data kosong");
+    const buy = Number(item.buy || item.sellPrice || 0);
+    if (!(buy > 0)) throw new Error("Harga 0");
+    const isSmall = buy >= 10000 && buy <= 60000;
+    const b001 = isSmall ? Math.round(buy) : Math.round(buy / 100);
+    const j001 = isSmall ? Math.round(Number(item.sel || item.buybackPrice || 0)) : Math.round(Number(item.sel || 0) / 100);
+    return res.status(200).json(buildResponse(true, "Pegadaian (logam-mulia-api)", sourceUrl, b001, j001, item.recordedDate || null, errors));
+  } catch (e) { errors.push(`L3-logammulia-api: ${e.message}`); }
 
-// --- SUMBER ALTERNATIF 2A: harga-emas.org ---
-async function fetchFromHargaEmasOrg() {
-  const response = await fetch("https://harga-emas.org/", {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/125 Mobile Safari/537.36",
-      "Accept": "text/html,application/xhtml+xml,*/*;q=0.9",
-      "Accept-Language": "id-ID,id;q=0.9"
-    }
-  });
+  // ─── LAPIS 4: logam-mulia-api — endpoint anekalogam (Antam) ─────────────────
+  try {
+    const r = await fetch("https://logam-mulia-api.vercel.app/prices/anekalogam", {
+      headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" }
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const json = await r.json();
+    const item = Array.isArray(json?.data) ? json.data[0] : null;
+    if (!item) throw new Error("Data kosong");
+    const buy = Number(item.sellPrice || item.buy || 0);
+    if (!(buy > 1000000)) throw new Error("Harga tidak valid");
+    const b001 = Math.round(buy / 100);
+    const j001 = Math.round(Number(item.buybackPrice || item.sel || buy * 0.89) / 100);
+    return res.status(200).json(buildResponse(true, "Antam (anekalogam via logam-mulia-api)", sourceUrl, b001, j001, item.recordedDate || null, errors));
+  } catch (e) { errors.push(`L4-anekalogam: ${e.message}`); }
 
-  if (!response.ok) return null;
-  const html = await response.text();
-
-  // Cari harga Galeri24 per gram dari tabel harga
-  // Format: "Galeri 24" ... "Rp X.XXX.XXX"
-  const patterns = [
-    /Galeri\s*24[\s\S]{0,300}?Rp\s*([\d.,]+)/i,
-    /galeri24[\s\S]{0,300}?Rp\s*([\d.,]+)/i,
-    /Galeri[\s\S]{0,50}?24[\s\S]{0,200}?([\d]{1,3}(?:[.,][\d]{3})+)/i
-  ];
-
-  for (const pattern of patterns) {
-    const match = html.match(pattern);
-    if (!match?.[1]) continue;
-    const hargaPerGram = parseRupiah(match[1]);
-    if (hargaPerGram >= 2000000 && hargaPerGram <= 5000000) {
-      const beli001 = Math.round(hargaPerGram / 100);
-      return {
-        beli_001: beli001,
-        jual_001: Math.round(beli001 * 0.96),
-        beli_per_gram: hargaPerGram,
-        jual_per_gram: Math.round(hargaPerGram * 0.96),
-        tanggal: null
-      };
-    }
-  }
-  return null;
-}
-
-// --- SUMBER ALTERNATIF 2B: logam-mulia-api ---
-async function fetchFromLogamMuliaApi() {
-  const response = await fetch(
-    "https://logam-mulia-api.vercel.app/prices/pegadaian",
-    {
+  // ─── LAPIS 5: Scrape logammulia.com langsung (Antam resmi) ──────────────────
+  try {
+    const r = await fetch("https://logammulia.com/id/harga-hari-ini", {
       headers: {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json"
+        "User-Agent": "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/125 Mobile Safari/537.36",
+        "Accept": "text/html,*/*",
+        "Accept-Language": "id-ID,id;q=0.9"
       }
-    }
-  );
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const html = await r.text();
+    const harga = scrapeHargaPerGram(html, ["1 gram", "1gram"]);
+    if (!harga || harga < 2000000) throw new Error("Harga tidak valid");
+    const b001 = Math.round(harga / 100);
+    return res.status(200).json(buildResponse(true, "Antam logammulia.com (live)", sourceUrl, b001, Math.round(b001 * 0.89), null, errors));
+  } catch (e) { errors.push(`L5-logammulia.com: ${e.message}`); }
 
-  if (!response.ok) return null;
-  const json = await response.json();
-  const item = Array.isArray(json?.data) ? json.data[0] : null;
-  if (!item) return null;
+  // ─── LAPIS 6: harga-emas.org — ambil Antam kalau Galeri24 sudah gagal ───────
+  try {
+    const r = await fetch("https://harga-emas.org/antam/", {
+      headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*" }
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const html = await r.text();
+    const harga = scrapeHargaPerGram(html, ["1 gram", "Antam"]);
+    if (!harga || harga < 2000000) throw new Error("Harga tidak valid");
+    const b001 = Math.round(harga / 100);
+    return res.status(200).json(buildResponse(true, "Antam (harga-emas.org/antam)", sourceUrl, b001, Math.round(b001 * 0.89), null, errors));
+  } catch (e) { errors.push(`L6-hargaemas.org/antam: ${e.message}`); }
 
-  const buy = Number(item.buy || item.sellPrice || 0);
-  const sel = Number(item.sel || item.buybackPrice || 0);
-  if (!(buy > 0)) return null;
+  // ─── LAPIS 7: API publik metals/XAU — konversi USD ke IDR ──────────────────
+  try {
+    const fxR = await fetch("https://open.er-api.com/v6/latest/USD");
+    if (!fxR.ok) throw new Error("FX gagal");
+    const fxJson = await fxR.json();
+    const usdIdr = fxJson?.rates?.IDR;
+    if (!(usdIdr > 10000)) throw new Error("Kurs tidak valid");
 
-  const isPerHundredthGram = buy >= 10000 && buy <= 60000;
+    // XAU/USD dari Metals-API free tier
+    const goldR = await fetch("https://api.metals.live/v1/spot/gold");
+    if (!goldR.ok) throw new Error("Gold API gagal");
+    const goldJson = await goldR.json();
+    // response: [{"gold": 4073.78}] atau {"price": 4073.78}
+    const xauUsd = goldJson?.[0]?.gold || goldJson?.price || goldJson?.gold;
+    if (!(xauUsd > 0)) throw new Error("Harga XAU tidak valid");
 
-  return {
-    sumber: "Pegadaian (logam-mulia-api)",
-    beli_001: isPerHundredthGram ? Math.round(buy) : Math.round(buy / 100),
-    jual_001: isPerHundredthGram ? Math.round(sel) : Math.round(sel / 100),
-    beli_per_gram: isPerHundredthGram ? Math.round(buy * 100) : Math.round(buy),
-    jual_per_gram: isPerHundredthGram ? Math.round(sel * 100) : Math.round(sel),
+    // XAU per gram = XAU/oz ÷ 31.1035 × kurs IDR × markup ~6% (spread lokal)
+    const perGramIdr = Math.round((xauUsd / 31.1035) * usdIdr * 1.06);
+    const b001 = Math.round(perGramIdr / 100);
+    return res.status(200).json(buildResponse(true, `Estimasi XAU (spot $${xauUsd.toFixed(0)}, kurs ${Math.round(usdIdr)})`, sourceUrl, b001, Math.round(b001 * 0.92), null, errors));
+  } catch (e) { errors.push(`L7-XAU/IDR: ${e.message}`); }
+
+  // ─── LAPIS 8 (LAST RESORT): Hardcode manual — update berkala ────────────────
+  // Galeri24 Pegadaian 27 Juni 2026: Rp 2.627.000/gram
+  return res.status(200).json({
+    success: false,
+    sumber: "Galeri24 Pegadaian — fallback manual (27 Jun 2026)",
+    source_url: sourceUrl,
+    beli_001: 26270,
+    jual_001: 24500,
+    beli_per_gram: 2627000,
+    jual_per_gram: 2450000,
     berat: 0.01,
     satuan: "gram",
-    tanggal: item.recordedDate || item.date || json.timestamp || null
-  };
+    timestamp: new Date().toISOString(),
+    errors,
+    note: "Semua sumber live gagal. Pakai data hardcode terakhir."
+  });
 }
 
-// --- PARSER PEGADAIAN UTAMA ---
-function parsePegadaianHargaUtama(html) {
-  const decoded = decodeHtmlEntities(String(html || ""));
-  const textOnly = decoded
-    .replace(/<script\b[^>]*>/gi, " <script> ")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+// ─── HELPER: build response standar ─────────────────────────────────────────
+function buildResponse(success, sumber, sourceUrl, beli001, jual001, tanggal, errors = []) {
+  const resp = {
+    success,
+    sumber,
+    source_url: sourceUrl,
+    beli_001: beli001,
+    jual_001: jual001 || 0,
+    beli_per_gram: beli001 * 100,
+    jual_per_gram: (jual001 || 0) * 100,
+    berat: 0.01,
+    satuan: "gram",
+    timestamp: new Date().toISOString()
+  };
+  if (tanggal) resp.tanggal = tanggal;
+  if (errors?.length) resp.errors_sebelumnya = errors;
+  return resp;
+}
 
-  const searchable = `${decoded}\n${textOnly}`
-    .replace(/\\u003c/gi, "<")
-    .replace(/\\u003e/gi, ">")
-    .replace(/\\u0026/gi, "&")
-    .replace(/\\n/g, " ")
+// ─── HELPER: scrape harga per gram dari HTML ─────────────────────────────────
+function scrapeHargaPerGram(html, labels) {
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ");
 
-  const mainArea = cutBeforeGrafik(searchable);
-  const beli001 = extractHargaByLabel(mainArea, "Beli Emas");
-  const jual001 = extractHargaByLabel(mainArea, "Jual Emas");
-  const tanggal = extractTanggal(mainArea) || extractTanggal(searchable);
-
-  if (!isValidHarga001(beli001)) return null;
-
-  return {
-    beli_001: beli001,
-    jual_001: isValidHarga001(jual001) ? jual001 : 0,
-    tanggal
-  };
-}
-
-function cutBeforeGrafik(text) {
-  const idx = text.search(/Grafik\s+Harga\s+Emas\s+Pegadaian/i);
-  if (idx > -1) return text.slice(0, idx);
-  return text;
-}
-
-function extractHargaByLabel(text, label) {
-  const safeLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const patterns = [
-    new RegExp(`${safeLabel}[\\s\\S]{0,900}?Rp\\s*([0-9][0-9.\\s,]{3,})\\s*(?:/|per)\\s*0[,.]01\\s*gr`, "i"),
-    new RegExp(`${safeLabel}[\\s\\S]{0,500}?Rp\\s*([0-9][0-9.\\s,]{3,})`, "i"),
-    new RegExp(`${safeLabel}[\\s\\S]{0,700}?(?:price|harga|value|amount)["'\\s:=]+Rp?\\s*([0-9][0-9.\\s,]{3,})`, "i")
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (!match?.[1]) continue;
-    const harga = parseRupiah(match[1]);
-    if (isValidHarga001(harga)) return harga;
+  for (const label of labels) {
+    const safeLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const patterns = [
+      new RegExp(`${safeLabel}[\\s\\S]{0,300}?Rp\\s*([\\d.,]+)`, "i"),
+      new RegExp(`${safeLabel}[\\s\\S]{0,300}?([\\d]{1,3}(?:[.,][\\d]{3}){2,})`, "i")
+    ];
+    for (const pat of patterns) {
+      const m = text.match(pat);
+      if (!m?.[1]) continue;
+      const val = parseRupiah(m[1]);
+      if (val >= 2000000 && val <= 8000000) return val;
+    }
   }
   return 0;
 }
 
+// ─── HELPER: parse angka rupiah ──────────────────────────────────────────────
 function parseRupiah(value) {
-  if (value == null) return 0;
-  const raw = String(value).replace(/&nbsp;/gi, " ").replace(/\s+/g, "").replace(/[^0-9.,]/g, "");
-  if (!raw) return 0;
-  const cleaned = raw.replace(/[.,]/g, "");
-  const number = Number(cleaned);
-  return Number.isFinite(number) ? number : 0;
+  if (!value) return 0;
+  const cleaned = String(value).replace(/[^0-9]/g, "");
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : 0;
 }
 
-function isValidHarga001(value) {
-  return Number.isFinite(value) && value >= 10000 && value <= 60000;
+// ─── PARSER HTML PEGADAIAN ───────────────────────────────────────────────────
+function parsePegadaianHTML(html) {
+  const decoded = html
+    .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, (_, c) => String.fromCharCode(Number(c)));
+
+  const text = decoded
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ");
+
+  const cutIdx = text.search(/Grafik\s+Harga\s+Emas/i);
+  const area = cutIdx > -1 ? text.slice(0, cutIdx) : text;
+
+  const beli001 = extractHarga001(area, "Beli Emas");
+  const jual001 = extractHarga001(area, "Jual Emas");
+  const tanggal = area.match(/Diperbarui\s+([0-9]{1,2}\s+\w+\s+[0-9]{4})/i)?.[1] || null;
+
+  return beli001 ? { beli_001: beli001, jual_001: jual001 || 0, tanggal } : null;
 }
 
-function extractTanggal(text) {
-  const patterns = [
-    /Diperbarui\s+([0-9]{1,2}\s+[A-Za-zÀ-ÿ]+\s+[0-9]{4})/i,
-    /Update\s+(?:[A-Za-zÀ-ÿ]+,\s*)?([0-9]{1,2}\s+[A-Za-zÀ-ÿ]+\s+[0-9]{4})/i,
-    /Harga\s+Emas\s+Hari\s+Ini[\s\S]{0,120}?([0-9]{1,2}\s+[A-Za-zÀ-ÿ]+\s+[0-9]{4})/i
+function extractHarga001(text, label) {
+  const safe = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pats = [
+    new RegExp(`${safe}[\\s\\S]{0,900}?Rp\\s*([0-9][0-9.,\\s]{3,})\\s*(?:/|per)\\s*0[,.]01`, "i"),
+    new RegExp(`${safe}[\\s\\S]{0,500}?Rp\\s*([0-9][0-9.,\\s]{3,})`, "i")
   ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) return match[1].trim();
+  for (const pat of pats) {
+    const m = text.match(pat);
+    if (!m?.[1]) continue;
+    const val = parseRupiah(m[1]);
+    if (val >= 10000 && val <= 60000) return val;
   }
-  return null;
-}
-
-function decodeHtmlEntities(str) {
-  return String(str || "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&#x27;/gi, "'")
-    .replace(/&#x2F;/gi, "/")
-    .replace(/#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
+  return 0;
 }
